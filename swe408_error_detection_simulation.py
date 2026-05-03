@@ -1,38 +1,22 @@
 """
+Error Detection Simulation Tool.
+Simulates Parity Check and Hamming Block Coding against single-bit and burst errors.
 
-USAGE INSTRUCTIONS:
-
-1. Run with default parameters (9-bit dataword, r=3, burst=3):
-   python swe408_error_detection_simulation.py
-
-2. Run with a custom variable-length dataword:
-   python swe408_error_detection_simulation.py --dataword 1011
-   python swe408_error_detection_simulation.py --dataword 11110000111
-
-3. Run with custom Burst Error length (e.g., to test parity "blind spots"):
-   python swe408_error_detection_simulation.py --burst_len 2
-
-4. Run with Dynamic Hamming redundancy (e.g., r=4 for Hamming 15,11):
-   python swe408_error_detection_simulation.py --hamming_r 4
-
-5. Combined Stress Test (Custom data, custom block size, custom burst):
-   python swe408_error_detection_simulation.py --dataword 1010101 --hamming_r 4 --burst_len 5
+Usage:
+    python swe408_error_detection_simulation.py [--dataword BINARY] [--burst_len LEN] [--hamming_r R]
 """
 
 import argparse
 import hashlib
 import random
 
- # ============================================================================
- # 1. UTILITIES & DATA INPUT HANDLING
- # ============================================================================
+# ============================================================================
+# 1. UTILITIES & DATA INPUT HANDLING
+# ============================================================================
 
 
 def validate_binary_string(s: str) -> None:
-    """Validate that the user-provided binary data word is non-empty and contains only 0/1.
-
-    This supports the assignment's data input handling requirement for variable-length inputs.
-    """
+    """Validate that the binary string is non-empty and contains only 0 and 1."""
     s = s.strip()
     if not s:
         raise ValueError("Binary dataword must not be empty.")
@@ -42,39 +26,36 @@ def validate_binary_string(s: str) -> None:
 
 def to_bit_list(binary_string: str) -> list[int]:
     """Convert a binary string into a list of integer bits (0/1)."""
-    return [1 if ch == "1" else 0 for ch in binary_string.strip()]
+    return [int(ch) for ch in binary_string.strip()]
 
 
 def bits_to_string(bits: list[int]) -> str:
     """Convert a list of integer bits (0/1) into its binary string representation."""
-    return "".join("1" if b else "0" for b in bits)
+    return "".join(str(b) for b in bits)
 
 
 def stable_seed(*parts: str) -> int:
-    """Create a deterministic seed for reproducible scenario testing output (execution log stability)."""
-    payload = "|".join(parts).encode("utf-8")
-    digest = hashlib.sha256(payload).digest()
-    return int.from_bytes(digest[:4], "big", signed=False)
+    """Create a deterministic integer seed from scenario parameters for reproducible error injection."""
+    raw = "|".join(parts).encode("utf-8")
+    digest = hashlib.sha256(raw).digest()
+    return int.from_bytes(digest[:4], "big")
 
 
 def redundancy_ratio(redundant_bits: int, data_bits: int) -> float:
-    """Compute the redundancy ratio (redundant/data) as an engineering metric."""
+    """Compute the redundancy ratio (redundant/data)."""
     if data_bits <= 0:
         return 0.0
     return redundant_bits / data_bits
 
 
 def format_redundancy(redundant_bits: int, data_bits: int) -> str:
-    """Format redundancy ratio for clean, comparable output in the execution log."""
+    """Format redundancy ratio for display."""
     ratio = redundancy_ratio(redundant_bits, data_bits)
     return f"{redundant_bits}/{data_bits} = {ratio:.6f} ({ratio * 100:.2f}%)"
 
 
 def final_result_text(error_detected: bool) -> str:
-    """Definitively concludes whether the transmission was successful or corrupted.
-
-    This matches the rubric language: 'No error occurred' vs 'Error is detected'.
-    """
+    """Return the final status string based on detection state."""
     return "Corrupted (Error is detected)" if error_detected else "Successful (No error detected)"
 
 
@@ -84,13 +65,9 @@ def final_result_text(error_detected: bool) -> str:
 
 
 def encode_parity(data_bits: list[int], parity_mode: str) -> list[int]:
-    """Encode a dataword using parity check (even/odd) by appending redundant bits.
-
-    Implements the parity check encoding method required for the encoding process.
-    """
+    """Encode data bits with an even or odd parity bit."""
     if parity_mode not in ("even", "odd"):
         raise ValueError("parity_mode must be 'even' or 'odd'.")
-    # Parity checking logic
     data_ones = sum(data_bits) % 2
     desired_total_parity = 0 if parity_mode == "even" else 1
     parity_bit = desired_total_parity ^ data_ones
@@ -98,13 +75,9 @@ def encode_parity(data_bits: list[int], parity_mode: str) -> list[int]:
 
 
 def detect_parity(received_bits: list[int], parity_mode: str) -> bool:
-    """Receiver module that applies detection algorithms based on encoding method (Parity Check).
-
-    Verifies a received codeword and returns whether an error is detected.
-    """
+    """Verify parity of the received codeword and return True if an error is detected."""
     if parity_mode not in ("even", "odd"):
         raise ValueError("parity_mode must be 'even' or 'odd'.")
-    # Parity checking logic
     total_parity = sum(received_bits) % 2
     expected_total_parity = 0 if parity_mode == "even" else 1
     return total_parity != expected_total_parity
@@ -121,85 +94,70 @@ def chunk_bits(bits: list[int], size: int) -> list[list[int]]:
 
 
 def encode_hamming_dynamic(data_bits: list[int], r: int = 3) -> tuple[list[int], int]:
-    """
-    Dynamic Hamming(n, k) Block Coding System.
-    
-    This function transforms k data bits into n total bits based on the redundancy value r.
-    Providing r=3 results in the standard Hamming(7,4) implementation.
-    
-    Features:
-    - n = 2^r - 1 (Total codeword length)
-    - k = n - r (Number of data bits)
-    - Automatically handles variable-length inputs via padding.
-    """
+    """Encode data into Hamming(n, k) block code where n=2^r-1 and k=n-r."""
     n = 2**r - 1
     k = n - r
     
-    # STEP 1: Padding data to be a multiple of k
+    # Pad data to align with block size k
     padded = data_bits[:]
     if len(padded) % k != 0:
         padded.extend([0] * (k - (len(padded) % k)))
 
     encoded: list[int] = []
     
-    # STEP 2: Process data in blocks of k-bits
+    # Process blocks of k-bits
     for block in chunk_bits(padded, k):
-        # Create a list of size n+1 (using 1-indexing for easier logic)
+        # Use 1-based indexing for standard Hamming code positions
         codeword = [0] * (n + 1)
         
-        # STEP 3: Place data bits into non-parity positions (indices not powers of 2)
+        # Place data bits at non-power-of-2 positions
         data_idx = 0
         for i in range(1, n + 1):
-            if (i & (i - 1)) != 0: # If i is NOT a power of 2
+            if (i & (i - 1)) != 0:  # Bitwise trick: i is not a power of 2
                 codeword[i] = block[data_idx]
                 data_idx += 1
         
-        # STEP 4: Calculate parity bits (p1, p2, p4, ...)
+        # Calculate parity bits at power-of-2 positions
         for i in range(r):
             p_pos = 2**i
             parity_val = 0
-            # XOR all positions covered by this parity bit
             for j in range(1, n + 1):
+                # Check if position j is covered by parity p_pos
                 if j & p_pos:
                     parity_val ^= codeword[j]
             codeword[p_pos] = parity_val
             
-        # Append the codeword (excluding index 0) to the encoded stream
         encoded.extend(codeword[1:])
         
     return encoded, len(padded)
 
 
 def detect_hamming_dynamic(received_bits: list[int], r: int = 3) -> bool:
-    """
-    Dynamic Receiver Module for Hamming(n, k) block code validation.
-    
-    Calculates the syndrome by checking parity violations across each n-bit block.
-    A non-zero syndrome indicates that an error was detected.
-    """
+    """Calculate the syndrome for received Hamming(n, k) blocks to detect errors."""
     n = 2**r - 1
     if len(received_bits) % n != 0:
         raise ValueError(f"Received codeword length must be a multiple of {n}.")
 
     error_detected = False
     for block in chunk_bits(received_bits, n):
-        # 1-indexing for syndrome calculation
-        block_with_zero = [0] + block
+        # 1-based indexing alignment
+        indexed_block = [0] + block
         syndrome = 0
-        
-        # Calculate syndrome bits
+
+        # Check each parity position; accumulate its power-of-2 index on failure
         for i in range(r):
-            p_pos = 2**i
-            check_val = 0
+            parity_pos = 2**i
+            syndrome_bit = 0
             for j in range(1, n + 1):
-                if j & p_pos:
-                    check_val ^= block_with_zero[j]
-            if check_val != 0:
-                syndrome += p_pos # Add bit position to syndrome if parity fails
-        
+                # Check if position j is covered by parity parity_pos
+                if j & parity_pos:
+                    syndrome_bit ^= indexed_block[j]
+            if syndrome_bit != 0:
+                syndrome += parity_pos
+
         if syndrome != 0:
             error_detected = True
-            
+
     return error_detected
 
 
@@ -209,35 +167,29 @@ def detect_hamming_dynamic(received_bits: list[int], r: int = 3) -> bool:
 
 
 def inject_error(code_bits: list[int], scenario: str, burst_len: int, seed: int) -> list[int]:
-    """Simulated transmission channel to artificially corrupt data (flipping exactly one bit or multiple bits simultaneously).
-
-    Supports no error, single-bit error, and burst error scenarios for scenario testing.
-    """
+    """Inject specific error patterns into the bitstream for testing."""
     if scenario not in ("no_error", "single_bit", "burst"):
         raise ValueError("scenario must be one of: 'no_error', 'single_bit', 'burst'.")
 
-    received = code_bits[:]
+    received = code_bits[:]  # Create a shallow copy to prevent aliasing issues
     if scenario == "no_error":
         return received
 
     rng = random.Random(seed)
     if scenario == "single_bit":
         i = rng.randrange(0, len(received))
-        # Flipping the bit
-        received[i] ^= 1
+        received[i] ^= 1  # Flip bit via XOR
         return received
 
     burst_len_eff = min(burst_len, len(received))
     if burst_len_eff < 2:
         i = rng.randrange(0, len(received))
-        # Flipping the bit
-        received[i] ^= 1
+        received[i] ^= 1  # Flip bit via XOR
         return received
 
     start = rng.randrange(0, len(received) - burst_len_eff + 1)
     for idx in range(start, start + burst_len_eff):
-        # Flipping the bit
-        received[idx] ^= 1
+        received[idx] ^= 1  # Flip bit via XOR
     return received
 
 
@@ -249,17 +201,10 @@ def inject_error(code_bits: list[int], scenario: str, burst_len: int, seed: int)
 def run_parity_scenario(
     original_dataword: str, data_bits: list[int], parity_mode: str, scenario: str, burst_len: int
 ) -> dict:
-    """Run end-to-end parity check encoding, transmission simulation, and receiver-side detection.
-
-    Produces the required execution log metrics: original dataword, generated codeword, received codeword,
-    and final error detection result.
-    """
-    # Parity Check Encoding (Even/Odd)
+    """Execute a parity check simulation scenario and return metrics."""
     generated = encode_parity(data_bits, parity_mode)
     seed = stable_seed("parity", parity_mode, scenario, str(len(generated)), original_dataword)
-    # Transmission Simulation & Error Injection
     received = inject_error(generated, scenario, burst_len, seed)
-    # Receiving Process & Error Detection Logic
     error_detected = detect_parity(received, parity_mode)
     redundant = 1
     data_len = len(data_bits)
@@ -279,20 +224,13 @@ def run_parity_scenario(
 def run_block_scenario(
     original_dataword: str, data_bits: list[int], scenario: str, burst_len: int, hamming_r: int
 ) -> dict:
-    """Run end-to-end dynamic block coding (Hamming), transmission simulation, and receiver-side detection.
-
-    Produces the required execution log metrics: original dataword, generated codeword, received codeword,
-    and final error detection result using dynamic (n, k) parameters.
-    """
-    # 1. Dynamic Block Coding (Hamming Implementation)
-    # n = 2^r - 1, k = n - r
+    """Execute a Hamming block coding simulation scenario and return metrics."""
+    # n = 2^r - 1 (Total codeword length), k = n - r (Data bits length)
     generated, padded_len = encode_hamming_dynamic(data_bits, r=hamming_r)
     
-    # Calculate n and k for descriptive logging
     n_val = 2**hamming_r - 1
     k_val = n_val - hamming_r
     
-    # Create a stable seed for reproducible results
     seed = stable_seed(
         f"block_hamming_{n_val}_{k_val}", 
         scenario, 
@@ -301,10 +239,7 @@ def run_block_scenario(
         str(padded_len)
     )
     
-    # 2. Transmission Simulation & Error Injection
     received = inject_error(generated, scenario, burst_len, seed)
-    
-    # 3. Receiving Process & Error Detection Logic (Syndrome Calculation)
     error_detected = detect_hamming_dynamic(received, r=hamming_r)
     
     redundant = len(generated) - padded_len
@@ -323,7 +258,7 @@ def run_block_scenario(
 
 
 def print_run_metrics(record: dict) -> None:
-    """Print the per-run execution log metrics required by the system output rubric."""
+    """Print the execution log metrics for a given scenario run."""
     scenario_titles = {
         "no_error": "No error introduced",
         "single_bit": "A single-bit error was introduced",
@@ -343,7 +278,7 @@ def print_run_metrics(record: dict) -> None:
 
 
 def print_analysis_report(results: list[dict]) -> None:
-    """Print a concise, data-driven analysis report for scenario testing and comparative analysis."""
+    """Print an analysis report summarizing the simulation results."""
     scenario_order = ["no_error", "single_bit", "burst"]
     scenario_titles = {
         "no_error": "No error introduced",
@@ -390,7 +325,6 @@ def print_analysis_report(results: list[dict]) -> None:
     print(f"- Block Coding correctness on `no_error`: {block_no_error_ok}.")
     print()
 
-    # Detection behavior insight for this specific run.
     for scenario in ["single_bit", "burst"]:
         parity_methods = [m for m in methods if m.startswith("Parity Check")]
         block_method = [m for m in methods if m.startswith("Block Coding")][0]
@@ -405,7 +339,7 @@ def print_analysis_report(results: list[dict]) -> None:
 
 
 def main() -> None:
-    """Program entry point that runs automated scenario testing and prints an execution log."""
+    """Run the main simulation pipeline."""
     default_dataword = "101011001"
     parser = argparse.ArgumentParser(description="SWE408 error detection simulation")
     parser.add_argument("--dataword", default=default_dataword, help="Binary dataword (e.g., 101011001).")
